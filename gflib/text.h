@@ -270,6 +270,8 @@
 
 #define NUM_TEXT_PRINTERS 32
 
+// Asynchronous page rendering: still honors prompts, pauses, and callbacks.
+#define TEXT_SPEED_INSTANT 0xFE
 #define TEXT_SPEED_FF 0xFF
 
 enum

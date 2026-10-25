@@ -8,6 +8,7 @@
 #include "battle_message.h"
 #include "battle_setup.h"
 #include "battle_tv.h"
+#include "battle_util.h"
 #include "bg.h"
 #include "data.h"
 #include "item.h"
@@ -394,6 +395,7 @@ static void HandleInputChooseTarget(void)
         DoBounceEffect(gActiveBattler, BOUNCE_HEALTHBOX, 7, 1);
         DoBounceEffect(gActiveBattler, BOUNCE_MON, 7, 1);
         EndBounceEffect(gMultiUsePlayerCursor, BOUNCE_HEALTHBOX);
+        MoveSelectionDisplayMoveType();
     }
     else if (JOY_NEW(DPAD_LEFT | DPAD_UP))
     {
@@ -443,6 +445,7 @@ static void HandleInputChooseTarget(void)
             } while (i == 0);
         }
         gSprites[gBattlerSpriteIds[gMultiUsePlayerCursor]].callback = SpriteCb_ShowAsMoveTarget;
+        MoveSelectionDisplayMoveType();
     }
     else if (JOY_NEW(DPAD_RIGHT | DPAD_DOWN))
     {
@@ -493,6 +496,7 @@ static void HandleInputChooseTarget(void)
         }
 
         gSprites[gBattlerSpriteIds[gMultiUsePlayerCursor]].callback = SpriteCb_ShowAsMoveTarget;
+        MoveSelectionDisplayMoveType();
     }
 }
 
@@ -686,6 +690,7 @@ static void HandleInputChooseMove(void)
                 gMultiUsePlayerCursor = GetBattlerAtPosition(B_POSITION_OPPONENT_LEFT);
 
             gSprites[gBattlerSpriteIds[gMultiUsePlayerCursor]].callback = SpriteCb_ShowAsMoveTarget;
+            MoveSelectionDisplayMoveType();
             break;
         case 2:
             gBattlerControllerFuncs[gActiveBattler] = HandleInputShowTargets;
@@ -1672,14 +1677,32 @@ static void MoveSelectionDisplayPpNumber(void)
 static void MoveSelectionDisplayMoveType(void)
 {
     u8 *txtPtr;
+    u8 moveType;
+    u8 category;
+    static const u8 colors[][2] =
+    {
+        [MOVE_PREVIEW_NEUTRAL] = {13, 15},
+        [MOVE_PREVIEW_SUPER_EFFECTIVE] = {5, 6},
+        [MOVE_PREVIEW_NOT_VERY_EFFECTIVE] = {1, 2},
+        [MOVE_PREVIEW_IMMUNE] = {7, 8},
+    };
     struct ChooseMoveStruct *moveInfo = (struct ChooseMoveStruct*)(&gBattleResources->bufferA[gActiveBattler][4]);
 
-    txtPtr = StringCopy(gDisplayedStringBattle, gText_MoveInterfaceType);
+    category = GetMoveEffectivenessPreview(moveInfo->moves[gMoveSelectionCursor[gActiveBattler]],
+        gActiveBattler, gMultiUsePlayerCursor,
+        gBattlerControllerFuncs[gActiveBattler] == HandleInputChooseTarget, &moveType);
+    txtPtr = gDisplayedStringBattle;
+    *(txtPtr)++ = EXT_CTRL_CODE_BEGIN;
+    *(txtPtr)++ = EXT_CTRL_CODE_COLOR_HIGHLIGHT_SHADOW;
+    *(txtPtr)++ = colors[category][0];
+    *(txtPtr)++ = 14;
+    *(txtPtr)++ = colors[category][1];
+    txtPtr = StringCopy(txtPtr, gText_MoveInterfaceType);
     *(txtPtr)++ = EXT_CTRL_CODE_BEGIN;
     *(txtPtr)++ = EXT_CTRL_CODE_SIZE;
     *(txtPtr)++ = 1;
 
-    StringCopy(txtPtr, gTypeNames[gBattleMoves[moveInfo->moves[gMoveSelectionCursor[gActiveBattler]]].type]);
+    StringCopy(txtPtr, gTypeNames[moveType]);
     BattlePutTextOnWindow(gDisplayedStringBattle, 10);
 }
 

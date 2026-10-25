@@ -13636,6 +13636,12 @@ static void Cmd_handleballthrow(void)
             }
         }
 
+        // Every permitted wild capture succeeds, while retaining ball statistics
+        // and the ordinary successful-capture script and ball-specific effects.
+        odds = 255;
+        gBattleSpritesDataPtr->animationData->isCriticalCapture = 0;
+        gBattleSpritesDataPtr->animationData->criticalCaptureSuccess = 0;
+
         if (odds > 254) // mon caught
         {
             BtlController_EmitBallThrowAnim(0, BALL_3_SHAKES_SUCCESS);

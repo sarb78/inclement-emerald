@@ -188,7 +188,8 @@ bool16 AddTextPrinter(struct TextPrinterTemplate *printerTemplate, u8 speed, voi
     GenerateFontHalfRowLookupTable(printerTemplate->fgColor, printerTemplate->bgColor, printerTemplate->shadowColor);
     if (speed != TEXT_SPEED_FF && speed != 0)
     {
-        --gTempTextPrinter.textSpeed;
+        if (speed != TEXT_SPEED_INSTANT)
+            --gTempTextPrinter.textSpeed;
         gTextPrinters[printerTemplate->windowId] = gTempTextPrinter;
     }
     else
@@ -214,23 +215,48 @@ void RunTextPrinters(void)
 
     if (gDisableTextPrinters == 0)
     {
-        for (i = 0; i < NUM_TEXT_PRINTERS; ++i)
+        for (i = 0; i < NUM_TEXT_PRINTERS && !gDisableTextPrinters; ++i)
         {
             if (gTextPrinters[i].active)
             {
-                u16 temp = RenderFont(&gTextPrinters[i]);
-                switch (temp)
+                struct TextPrinter *textPrinter = &gTextPrinters[i];
+                u16 limit = (textPrinter->textSpeed == TEXT_SPEED_INSTANT && !gTextFlags.autoScroll) ? 0x400 : 1;
+                u16 j;
+                bool8 dirty = FALSE;
+                u8 windowId = textPrinter->printerTemplate.windowId;
+
+                for (j = 0; j < limit; ++j)
                 {
-                case 0:
-                    CopyWindowToVram(gTextPrinters[i].printerTemplate.windowId, 2);
-                case 3:
-                    if (gTextPrinters[i].callback != 0)
-                        gTextPrinters[i].callback(&gTextPrinters[i].printerTemplate, temp);
-                    break;
-                case 1:
-                    gTextPrinters[i].active = 0;
-                    break;
+                    u16 temp = RenderFont(textPrinter);
+                    const u8 *currentChar = textPrinter->printerTemplate.currentChar;
+
+                    if (temp == 0)
+                    {
+                        if (limit == 1)
+                            CopyWindowToVram(windowId, 2);
+                        else
+                            dirty = TRUE;
+                    }
+                    if (temp == 0 || temp == 3)
+                    {
+                        if (textPrinter->callback != NULL)
+                            textPrinter->callback(&textPrinter->printerTemplate, temp);
+                    }
+                    else if (temp == 1)
+                    {
+                        textPrinter->active = FALSE;
+                    }
+
+                    // A wait gets at most one update per frame. A callback may
+                    // disable printing, replace this printer, or change speed.
+                    if (temp != 0 || !textPrinter->active || gDisableTextPrinters
+                        || textPrinter->textSpeed != TEXT_SPEED_INSTANT
+                        || textPrinter->printerTemplate.currentChar != currentChar)
+                        break;
                 }
+
+                if (dirty)
+                    CopyWindowToVram(windowId, 2);
             }
         }
     }
@@ -846,7 +872,7 @@ u16 RenderText(struct TextPrinter *textPrinter)
         if ((JOY_HELD(A_BUTTON | B_BUTTON)) && subStruct->hasPrintBeenSpedUp)
             textPrinter->delayCounter = 0;
 
-        if (textPrinter->delayCounter && textPrinter->textSpeed)
+        if (textPrinter->delayCounter && textPrinter->textSpeed && textPrinter->textSpeed != TEXT_SPEED_INSTANT)
         {
             textPrinter->delayCounter--;
             if (gTextFlags.canABSpeedUpPrint && (JOY_NEW(A_BUTTON | B_BUTTON)))
@@ -860,7 +886,7 @@ u16 RenderText(struct TextPrinter *textPrinter)
         if (!(gBattleTypeFlags & BATTLE_TYPE_RECORDED) && gTextFlags.autoScroll)
             textPrinter->delayCounter = 3;
         else
-            textPrinter->delayCounter = textPrinter->textSpeed;
+            textPrinter->delayCounter = (textPrinter->textSpeed == TEXT_SPEED_INSTANT) ? 0 : textPrinter->textSpeed;
 
         currChar = *textPrinter->printerTemplate.currentChar;
         textPrinter->printerTemplate.currentChar++;

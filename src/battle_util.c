@@ -6,6 +6,7 @@
 #include "battle_util.h"
 #include "battle_controllers.h"
 #include "battle_interface.h"
+#include "battle_main.h"
 #include "battle_setup.h"
 #include "party_menu.h"
 #include "pokemon.h"
@@ -9192,6 +9193,195 @@ u16 CalcTypeEffectivenessMultiplier(u16 move, u8 moveType, u8 battlerAtk, u8 bat
     if (recordAbilities)
         UpdateMoveResultFlags(modifier);
     return modifier;
+}
+
+// Read-only counterparts of the immunity checks in the attack canceller,
+// ABILITYEFFECT_MOVES_BLOCK, ABILITYEFFECT_ABSORBING and the explosion script.
+// Do not execute those handlers here: they reveal abilities and run scripts.
+static bool32 IsMovePreviewBlocked(u16 move, u8 moveType, u8 attacker, u8 target)
+{
+    u32 ability = GetBattlerAbility(target);
+
+    if (WEATHER_HAS_EFFECT && gBattleMoves[move].power
+        && ((moveType == TYPE_FIRE && gBattleWeather & WEATHER_RAIN_PRIMAL)
+         || (moveType == TYPE_WATER && gBattleWeather & WEATHER_SUN_PRIMAL)))
+        return TRUE;
+
+    if (gBattleMoves[move].effect == EFFECT_EXPLOSION && IsAbilityOnField(ABILITY_DAMP))
+        return TRUE;
+
+    if ((ability == ABILITY_SOUNDPROOF && gBattleMoves[move].flags & FLAG_SOUND
+         && !(gBattleMoves[move].target & MOVE_TARGET_USER))
+        || (ability == ABILITY_BULLETPROOF && gBattleMoves[move].flags & FLAG_BALLISTIC))
+        return TRUE;
+
+    if (GetBattlerSide(attacker) != GetBattlerSide(target) && GetMovePriority(attacker, move) > 0)
+    {
+        u8 partner = BATTLE_PARTNER(target);
+        if ((gFieldStatuses & STATUS_FIELD_PSYCHIC_TERRAIN && IsBattlerGrounded(target))
+            || ability == ABILITY_DAZZLING || ability == ABILITY_QUEENLY_MAJESTY
+            || (IsBattlerAlive(partner)
+                && (GetBattlerAbility(partner) == ABILITY_DAZZLING
+                    || GetBattlerAbility(partner) == ABILITY_QUEENLY_MAJESTY)))
+            return TRUE;
+    }
+
+    if (gBattleMoves[move].flags & FLAG_POWDER && attacker != target
+        && ((B_POWDER_GRASS >= GEN_6 && IS_BATTLER_OF_TYPE(target, TYPE_GRASS))
+            || ability == ABILITY_OVERCOAT
+            || GetBattlerHoldEffect(target, TRUE) == HOLD_EFFECT_SAFETY_GOGGLES))
+        return TRUE;
+
+    switch (ability)
+    {
+    case ABILITY_VOLT_ABSORB:
+    case ABILITY_MOTOR_DRIVE:
+    case ABILITY_LIGHTNING_ROD:
+        return moveType == TYPE_ELECTRIC;
+    case ABILITY_WATER_ABSORB:
+    case ABILITY_DRY_SKIN:
+    case ABILITY_STORM_DRAIN:
+        return moveType == TYPE_WATER;
+    case ABILITY_SAP_SIPPER:
+        return moveType == TYPE_GRASS;
+    case ABILITY_FLASH_FIRE:
+        return moveType == TYPE_FIRE
+            && !((gBattleMons[target].status1 & STATUS1_FREEZE) && B_FLASH_FIRE_FROZEN <= GEN_4);
+    default:
+        return FALSE;
+    }
+}
+
+static u32 GetMovePreviewTargets(u16 move, u8 attacker, u8 selectedTarget, bool32 selectingTarget)
+{
+    u32 targets = 0;
+    u32 i;
+    u16 moveTarget = gBattleMoves[move].target;
+
+    if (selectingTarget && selectedTarget < gBattlersCount)
+        return gBitTable[selectedTarget];
+
+    if ((moveTarget & MOVE_TARGET_ALL_BATTLERS) == MOVE_TARGET_ALL_BATTLERS
+        || moveTarget & (MOVE_TARGET_FOES_AND_ALLY | MOVE_TARGET_BOTH | MOVE_TARGET_RANDOM))
+    {
+        for (i = 0; i < gBattlersCount; i++)
+        {
+            if ((moveTarget & MOVE_TARGET_ALL_BATTLERS) == MOVE_TARGET_ALL_BATTLERS
+                || (moveTarget & MOVE_TARGET_FOES_AND_ALLY && i != attacker)
+                || (!(moveTarget & MOVE_TARGET_FOES_AND_ALLY)
+                    && GetBattlerSide(i) != GetBattlerSide(attacker)))
+                targets |= gBitTable[i];
+        }
+    }
+    else if (moveTarget & (MOVE_TARGET_USER | MOVE_TARGET_USER_OR_SELECTED))
+    {
+        targets = gBitTable[attacker];
+    }
+    else if (moveTarget & MOVE_TARGET_ALLY)
+    {
+        u8 partner = BATTLE_PARTNER(attacker);
+        targets = gBitTable[IsBattlerAlive(partner) ? partner : attacker];
+    }
+    else
+    {
+        // Match the initial selection cursor without consuming battle RNG.
+        u8 position = (GetBattlerPosition(attacker) & BIT_SIDE) ^ BIT_SIDE;
+        u8 target = GetBattlerAtPosition(position);
+        if (target >= gBattlersCount || !IsBattlerAlive(target))
+            target = GetBattlerAtPosition(position ^ BIT_FLANK);
+        if (target < gBattlersCount)
+            targets = gBitTable[target];
+    }
+
+    return targets;
+}
+
+u8 GetMoveEffectivenessPreview(u16 move, u8 attacker, u8 selectedTarget, bool32 selectingTarget, u8 *moveType)
+{
+    u8 result = MOVE_PREVIEW_NEUTRAL;
+    u8 category;
+    u8 target;
+    u32 targets;
+    bool32 hasTarget = FALSE;
+    bool32 mixed = FALSE;
+    // The shared type and ability helpers use live attack context. Install a
+    // temporary context, then restore every field they can touch. In particular,
+    // the turn-order entries make Mold Breaker independent of the previous turn.
+    u8 savedAttacker = gBattlerAttacker;
+    u8 savedTarget = gBattlerTarget;
+    u16 savedMove = gCurrentMove;
+    u8 savedAction = gCurrentTurnActionNumber;
+    u8 savedItemBattler = gPotentialItemEffectBattler;
+    u8 savedTurnBattler;
+    u8 savedTurnAction;
+    u8 savedType;
+    bool8 savedAteBoost;
+    bool8 savedGemBoost;
+    u8 savedGemParam;
+    bool8 savedPrankster;
+
+    *moveType = TYPE_MYSTERY;
+    if (move == MOVE_NONE || move >= MOVES_COUNT || attacker >= gBattlersCount)
+        return result;
+
+    savedTurnBattler = gBattlerByTurnOrder[attacker];
+    savedTurnAction = gActionsByTurnOrder[attacker];
+    savedType = gBattleStruct->dynamicMoveType;
+    savedAteBoost = gBattleStruct->ateBoost[attacker];
+    savedGemBoost = gSpecialStatuses[attacker].gemBoost;
+    savedGemParam = gSpecialStatuses[attacker].gemParam;
+    savedPrankster = gProtectStructs[attacker].pranksterElevated;
+
+    gBattlerAttacker = attacker;
+    gCurrentMove = move;
+    gCurrentTurnActionNumber = attacker;
+    gBattlerByTurnOrder[attacker] = attacker;
+    gActionsByTurnOrder[attacker] = B_ACTION_USE_MOVE;
+    gBattleStruct->dynamicMoveType = 0;
+    SetTypeBeforeUsingMove(move, attacker);
+    GET_MOVE_TYPE(move, *moveType);
+
+    targets = GetMovePreviewTargets(move, attacker, selectedTarget, selectingTarget);
+    if (!IS_MOVE_STATUS(move))
+    {
+        for (target = 0; target < gBattlersCount; target++)
+        {
+            u16 multiplier;
+            if (!(targets & gBitTable[target]) || !IsBattlerAlive(target))
+                continue;
+            gBattlerTarget = target;
+            multiplier = CalcTypeEffectivenessMultiplier(move, *moveType, attacker, target, FALSE);
+            if (multiplier == UQ_4_12(0.0) || IsMovePreviewBlocked(move, *moveType, attacker, target))
+                category = MOVE_PREVIEW_IMMUNE;
+            else if (multiplier > UQ_4_12(1.0))
+                category = MOVE_PREVIEW_SUPER_EFFECTIVE;
+            else if (multiplier < UQ_4_12(1.0))
+                category = MOVE_PREVIEW_NOT_VERY_EFFECTIVE;
+            else
+                category = MOVE_PREVIEW_NEUTRAL;
+
+            if (hasTarget && category != result)
+                mixed = TRUE;
+            else if (!hasTarget)
+                result = category;
+            hasTarget = TRUE;
+        }
+    }
+
+    gBattlerAttacker = savedAttacker;
+    gBattlerTarget = savedTarget;
+    gCurrentMove = savedMove;
+    gCurrentTurnActionNumber = savedAction;
+    gPotentialItemEffectBattler = savedItemBattler;
+    gBattlerByTurnOrder[attacker] = savedTurnBattler;
+    gActionsByTurnOrder[attacker] = savedTurnAction;
+    gBattleStruct->dynamicMoveType = savedType;
+    gBattleStruct->ateBoost[attacker] = savedAteBoost;
+    gSpecialStatuses[attacker].gemBoost = savedGemBoost;
+    gSpecialStatuses[attacker].gemParam = savedGemParam;
+    gProtectStructs[attacker].pranksterElevated = savedPrankster;
+
+    return mixed ? MOVE_PREVIEW_NEUTRAL : result;
 }
 
 u16 CalcPartyMonTypeEffectivenessMultiplier(u16 move, u16 speciesDef, u16 abilityDef)

@@ -124,6 +124,14 @@ u8 GetBattleMonMoveSlot(struct BattlePokemon *battleMon, u16 move);
 u32 GetBattlerWeight(u8 battlerId);
 s32 CalculateMoveDamage(u16 move, u8 battlerAtk, u8 battlerDef, u8 moveType, s32 fixedBasePower, bool32 isCrit, bool32 randomFactor, bool32 updateFlags);
 u16 CalcTypeEffectivenessMultiplier(u16 move, u8 moveType, u8 battlerAtk, u8 battlerDef, bool32 recordAbilities);
+enum MoveEffectivenessPreview
+{
+    MOVE_PREVIEW_NEUTRAL,
+    MOVE_PREVIEW_SUPER_EFFECTIVE,
+    MOVE_PREVIEW_NOT_VERY_EFFECTIVE,
+    MOVE_PREVIEW_IMMUNE,
+};
+u8 GetMoveEffectivenessPreview(u16 move, u8 attacker, u8 selectedTarget, bool32 selectingTarget, u8 *moveType);
 u16 CalcPartyMonTypeEffectivenessMultiplier(u16 move, u16 speciesDef, u16 abilityDef);
 u16 GetTypeModifier(u8 atkType, u8 defType);
 s32 GetStealthHazardDamage(u8 hazardType, u8 battlerId);
